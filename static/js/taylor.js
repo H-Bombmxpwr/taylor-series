@@ -262,12 +262,16 @@ function computeNumericalCoefficients(funcStr, a, maxN) {
 
 // Main function to get Taylor coefficients
 function getTaylorCoefficients(funcStr, a, maxN) {
-    // Try symbolic first
-    const symbolic = getSymbolicCoefficients(funcStr, a, maxN);
+  const symbolic = getSymbolicCoefficients(funcStr, a, maxN);
     if (symbolic) return symbolic;
 
-    // Fall back to numerical
+    // Try symbolic differentiation for custom functions / non-covered centers
+    const symDiff = computeSymbolicDiffCoefficients(funcStr, a, maxN);
+    if (symDiff) return symDiff;
+
+    // Fall back to numerical finite differences (least stable at high n)
     return computeNumericalCoefficients(funcStr, a, maxN);
+
 }
 
 // Evaluate Taylor polynomial at x
@@ -416,6 +420,41 @@ function buildExpandedLatex(coeffs, a) {
     return eq;
 }
 
+function buildExpandedLatexMultiline(coeffs, a, n, termsPerLine = 4) {
+    const formattedTerms = [];
+    for (let k = 0; k < coeffs.length; k++) {
+        const formatted = formatCoeffLatex(coeffs[k], k, a);
+        if (formatted) formattedTerms.push(formatted);
+    }
+
+    if (formattedTerms.length === 0) {
+        return `\\begin{aligned} T_{${n}}(x) &= 0 \\end{aligned}`;
+    }
+
+    // Turn each term into a signed token ("-x^2", "+ 3x", ...)
+    const tokens = formattedTerms.map((t, i) => {
+        if (i === 0) return (t.sign === '-') ? `-${t.term}` : `${t.term}`;
+        return `${t.sign} ${t.term}`;
+    });
+
+    // Group tokens into lines
+    const lines = [];
+    for (let i = 0; i < tokens.length; i += termsPerLine) {
+        lines.push(tokens.slice(i, i + termsPerLine).join(' '));
+    }
+
+    // Use aligned so KaTeX renders multiple lines cleanly
+    // Repeating "&=" is fine and keeps alignment consistent.
+    let out = `\\begin{aligned} T_{${n}}(x) &= ${lines[0]}`;
+    for (let i = 1; i < lines.length; i++) {
+        out += ` \\\\ &= ${lines[i]}`;
+    }
+    out += `\\end{aligned}`;
+
+    return out;
+}
+
+
 // Generate plot data
 function generateData() {
     const xMin = centerPoint - viewRange;
@@ -495,7 +534,8 @@ function generateData() {
         Math.min(12, yMax + padding)
     ];
 
-    return { xValues, originalY, taylorY, errorY, generalLatex, expandedLatex, yRange };
+    return { xValues, originalY, taylorY, errorY, generalLatex, expandedLatex, yRange, coeffs };
+
 }
 
 // Show/hide error
@@ -521,15 +561,14 @@ function showToast(msg) {
     }
 }
 
-// Render LaTeX safely (no animation)
-function renderLatex(element, latex) {
+function renderLatex(element, latex, { displayMode = false } = {}) {
     if (!element) return;
 
     if (katexReady && typeof katex !== 'undefined') {
         try {
             katex.render(latex, element, {
                 throwOnError: false,
-                displayMode: false
+                displayMode
             });
         } catch (e) {
             element.textContent = latex;
@@ -539,6 +578,30 @@ function renderLatex(element, latex) {
     }
 }
 
+function computeSymbolicDiffCoefficients(funcStr, a, maxN) {
+    try {
+        let node = math.parse(funcStr);
+
+        const coeffs = [];
+        for (let n = 0; n <= maxN; n++) {
+            const compiled = node.compile();
+            const derivAtA = compiled.evaluate({ x: a });
+
+            if (!isFinite(derivAtA)) return null;
+
+            coeffs.push(derivAtA / factorial(n));
+
+            // Next derivative
+            node = math.derivative(node, 'x');
+        }
+        return coeffs;
+    } catch (e) {
+        return null;
+    }
+}
+
+
+
 // Main update function with graph animation support
 function updatePlots(animate = false) {
     hideError();
@@ -546,13 +609,22 @@ function updatePlots(animate = false) {
     const data = generateData();
     if (!data) return;
 
-    const { xValues, originalY, taylorY, errorY, generalLatex, expandedLatex, yRange } = data;
+    const { xValues, originalY, taylorY, errorY, generalLatex, expandedLatex, yRange, coeffs } = data;
+
 
     // Update LaTeX displays (no animation)
-    renderLatex(elements.latexGeneral, generalLatex);
-    currentLatex = `T_{${numTerms}}(x) = ${expandedLatex}`;
-    renderLatex(elements.latexExpanded, currentLatex);
-    if (elements.latexRaw) elements.latexRaw.textContent = currentLatex;
+    // General: display mode (cleaner formatting)
+    renderLatex(elements.latexGeneral, generalLatex, { displayMode: true });
+
+    // Expanded: show multiline display, but keep a single-line version for copying
+    const expandedRaw = `T_{${numTerms}}(x) = ${expandedLatex}`;
+    const expandedDisplay = buildExpandedLatexMultiline(coeffs, centerPoint, numTerms, 4);
+
+    currentLatex = expandedRaw; // keep copy behavior unchanged
+    renderLatex(elements.latexExpanded, expandedDisplay, { displayMode: true });
+
+    if (elements.latexRaw) elements.latexRaw.textContent = expandedRaw;
+
 
     // Main plot traces
     const traces = [

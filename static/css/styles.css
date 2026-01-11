@@ -619,7 +619,7 @@ input[type="range"]:active::-webkit-slider-thumb {
     letter-spacing: 1px;
 }
 
-/* LaTeX display with proper wrapping */
+/* LaTeX display: allow multi-line equations cleanly */
 .latex-display {
     background: linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(240, 248, 255, 0.95));
     border-radius: 10px;
@@ -629,12 +629,17 @@ input[type="range"]:active::-webkit-slider-thumb {
     border: 2px solid transparent;
     transition: all 0.3s ease;
 
-    /* Critical: contain the content and enable wrapping */
     max-width: 100%;
-    overflow-x: auto;
+
+    /* Prefer line breaks over infinite width */
+    overflow-x: auto;     /* safety: if a single term is too wide */
     overflow-y: hidden;
 
-    /* Scrollbar styling */
+    /* If KaTeX fails and we show raw text, wrap it */
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+
     scrollbar-width: thin;
     scrollbar-color: #00d9ff rgba(0,0,0,0.1);
 }
@@ -660,14 +665,14 @@ input[type="range"]:active::-webkit-slider-thumb {
 
 /* KaTeX specific styling */
 .latex-display .katex {
-    font-size: 1.1rem;
-    text-align: left;
+    font-size: 1.05rem;
 }
 
 .latex-display .katex-display {
     margin: 0;
     text-align: left;
 }
+
 
 .expanded-form-box .latex-display {
     border-color: rgba(0, 217, 255, 0.3);
