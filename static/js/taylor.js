@@ -9,6 +9,11 @@ let animationInterval = null;
 let currentLatex = '';
 let katexReady = false;
 
+// Computation limits to prevent server/browser overload
+const MAX_TERMS = 50;  // Hard limit on number of terms
+const MAX_DERIVATIVE_ORDER = 50;  // Max derivative order for numerical computation
+const COMPUTATION_TIMEOUT_MS = 2000;  // Max time for any computation
+
 // Animation settings
 let animationSettings = {
     enabled: true,
@@ -262,16 +267,23 @@ function computeNumericalCoefficients(funcStr, a, maxN) {
 
 // Main function to get Taylor coefficients
 function getTaylorCoefficients(funcStr, a, maxN) {
-  const symbolic = getSymbolicCoefficients(funcStr, a, maxN);
+    // Enforce hard limit on terms to prevent expensive computations
+    const safeMaxN = Math.min(maxN, MAX_TERMS);
+
+    const symbolic = getSymbolicCoefficients(funcStr, a, safeMaxN);
     if (symbolic) return symbolic;
 
     // Try symbolic differentiation for custom functions / non-covered centers
-    const symDiff = computeSymbolicDiffCoefficients(funcStr, a, maxN);
+    const symDiff = computeSymbolicDiffCoefficients(funcStr, a, safeMaxN);
     if (symDiff) return symDiff;
 
     // Fall back to numerical finite differences (least stable at high n)
-    return computeNumericalCoefficients(funcStr, a, maxN);
-
+    // Only use numerical for reasonable derivative orders
+    if (safeMaxN > MAX_DERIVATIVE_ORDER) {
+        console.warn('Term count exceeds safe numerical derivative limit');
+        return Array(safeMaxN + 1).fill(0);
+    }
+    return computeNumericalCoefficients(funcStr, a, safeMaxN);
 }
 
 // Evaluate Taylor polynomial at x
@@ -420,7 +432,7 @@ function buildExpandedLatex(coeffs, a) {
     return eq;
 }
 
-function buildExpandedLatexMultiline(coeffs, a, n, termsPerLine = 4) {
+function buildExpandedLatexMultiline(coeffs, a, n) {
     const formattedTerms = [];
     for (let k = 0; k < coeffs.length; k++) {
         const formatted = formatCoeffLatex(coeffs[k], k, a);
@@ -428,7 +440,7 @@ function buildExpandedLatexMultiline(coeffs, a, n, termsPerLine = 4) {
     }
 
     if (formattedTerms.length === 0) {
-        return `\\begin{aligned} T_{${n}}(x) &= 0 \\end{aligned}`;
+        return `T_{${n}}(x) = 0`;
     }
 
     // Turn each term into a signed token ("-x^2", "+ 3x", ...)
@@ -437,19 +449,36 @@ function buildExpandedLatexMultiline(coeffs, a, n, termsPerLine = 4) {
         return `${t.sign} ${t.term}`;
     });
 
+    // Dynamically determine terms per line based on total term count
+    // Fewer terms per line for higher order polynomials to prevent overflow
+    let termsPerLine;
+    if (tokens.length <= 4) {
+        termsPerLine = 4;
+    } else if (tokens.length <= 8) {
+        termsPerLine = 3;
+    } else if (tokens.length <= 15) {
+        termsPerLine = 2;
+    } else {
+        termsPerLine = 2;
+    }
+
     // Group tokens into lines
     const lines = [];
     for (let i = 0; i < tokens.length; i += termsPerLine) {
         lines.push(tokens.slice(i, i + termsPerLine).join(' '));
     }
 
-    // Use aligned so KaTeX renders multiple lines cleanly
-    // Repeating "&=" is fine and keeps alignment consistent.
-    let out = `\\begin{aligned} T_{${n}}(x) &= ${lines[0]}`;
-    for (let i = 1; i < lines.length; i++) {
-        out += ` \\\\ &= ${lines[i]}`;
+    // Use aligned for multi-line, plain for single line
+    if (lines.length === 1) {
+        return `T_{${n}}(x) = ${lines[0]}`;
     }
-    out += `\\end{aligned}`;
+
+    // Use gathered environment for centered multi-line without repeating "="
+    let out = `\\begin{gathered} T_{${n}}(x) = ${lines[0]}`;
+    for (let i = 1; i < lines.length; i++) {
+        out += ` \\\\ \\quad ${lines[i]}`;
+    }
+    out += `\\end{gathered}`;
 
     return out;
 }
@@ -750,13 +779,19 @@ function toggleAnimationSettings() {
     elements.animationSettingsContent?.classList.toggle('expanded');
 }
 
-// Update slider config
-function updateSliderConfig(slider, minEl, maxEl, stepEl) {
+// Update slider config with safety limits
+function updateSliderConfig(slider, minEl, maxEl, stepEl, isTermsSlider = false) {
     if (!slider || !minEl || !maxEl || !stepEl) return;
 
-    const min = parseFloat(minEl.value);
-    const max = parseFloat(maxEl.value);
+    let min = parseFloat(minEl.value);
+    let max = parseFloat(maxEl.value);
     const step = parseFloat(stepEl.value);
+
+    // Enforce hard limit on terms slider
+    if (isTermsSlider) {
+        max = Math.min(max, MAX_TERMS);
+        maxEl.value = max;
+    }
 
     if (min < max && step > 0) {
         slider.min = min;
@@ -820,7 +855,7 @@ function animateTerms() {
     }, animationSettings.speed);
 }
 
-// Reset
+// Reset - recenters view on the green center point A
 function reset() {
     if (animationInterval) {
         clearInterval(animationInterval);
@@ -828,16 +863,23 @@ function reset() {
         if (elements.animateBtn) elements.animateBtn.textContent = 'Animate Terms';
     }
 
-    centerPoint = 0;
+    // Keep current center point but reset terms and range to defaults
     numTerms = 5;
     viewRange = 10;
 
-    if (elements.centerSlider) elements.centerSlider.value = 0;
-    if (elements.centerValue) elements.centerValue.textContent = '0';
     if (elements.termsSlider) elements.termsSlider.value = 5;
     if (elements.termsValue) elements.termsValue.textContent = '5';
     if (elements.rangeSlider) elements.rangeSlider.value = 10;
     if (elements.rangeValue) elements.rangeValue.textContent = '10';
+
+    // Force Plotly to reset view (in case user panned/zoomed)
+    const plotEl = document.getElementById('plot');
+    if (plotEl) {
+        Plotly.relayout('plot', {
+            'xaxis.autorange': false,
+            'xaxis.range': [centerPoint - viewRange, centerPoint + viewRange]
+        });
+    }
 
     updatePlots(false);
 }
@@ -867,7 +909,7 @@ function setupEventListeners() {
     });
 
     elements.termsSlider?.addEventListener('input', (e) => {
-        numTerms = parseInt(e.target.value);
+        numTerms = Math.min(parseInt(e.target.value), MAX_TERMS);
         if (elements.termsValue) elements.termsValue.textContent = numTerms;
         updatePlots(true); // Animate for term changes
     });
@@ -878,16 +920,16 @@ function setupEventListeners() {
         updatePlots(false); // No animation for range changes
     });
 
-    // Slider config
+    // Slider config with terms slider having safety limits
     const configs = [
-        { slider: elements.centerSlider, min: elements.centerMin, max: elements.centerMax, step: elements.centerStep },
-        { slider: elements.termsSlider, min: elements.termsMin, max: elements.termsMax, step: elements.termsStep },
-        { slider: elements.rangeSlider, min: elements.rangeMin, max: elements.rangeMax, step: elements.rangeStep }
+        { slider: elements.centerSlider, min: elements.centerMin, max: elements.centerMax, step: elements.centerStep, isTerms: false },
+        { slider: elements.termsSlider, min: elements.termsMin, max: elements.termsMax, step: elements.termsStep, isTerms: true },
+        { slider: elements.rangeSlider, min: elements.rangeMin, max: elements.rangeMax, step: elements.rangeStep, isTerms: false }
     ];
 
     configs.forEach(c => {
         [c.min, c.max, c.step].forEach(el => {
-            el?.addEventListener('change', () => updateSliderConfig(c.slider, c.min, c.max, c.step));
+            el?.addEventListener('change', () => updateSliderConfig(c.slider, c.min, c.max, c.step, c.isTerms));
         });
     });
 
